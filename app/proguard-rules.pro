@@ -1,0 +1,2 @@
+-keep class com.ajmal.os.LockAdmin { *; }
+-dontwarn **
