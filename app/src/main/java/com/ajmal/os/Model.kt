@@ -94,7 +94,7 @@ class LauncherModel(private val app: LauncherApp) {
                 if (text != null) {
                     try { parse(JSONObject(text)) } catch (e: Exception) { }
                 }
-                setApps(list)
+                updateApps(list)
                 ready = true
                 reconcile()
                 val w = ArrayList(waiters)
@@ -126,7 +126,7 @@ class LauncherModel(private val app: LauncherApp) {
             io.execute {
                 val list = queryApps()
                 main.post {
-                    setApps(list)
+                    updateApps(list)
                     reconcile()
                     for (l in ArrayList(listeners)) l()
                 }
@@ -153,7 +153,7 @@ class LauncherModel(private val app: LauncherApp) {
         return out
     }
 
-    private fun setApps(list: List<AppInfo>) {
+    private fun updateApps(list: List<AppInfo>) {
         apps = list
         val m = HashMap<String, AppInfo>()
         for (a in list) m[a.key] = a
