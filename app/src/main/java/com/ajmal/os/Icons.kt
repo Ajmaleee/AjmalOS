@@ -79,7 +79,8 @@ class IconCache(private val ctx: Context) {
         val app = LauncherApp.get()
         val p = app.prefs
         return a.key + "|" + size + "|" + p.int(K.ICON_APPEARANCE) + "|" + p.int(K.ICON_RADIUS) + "|" +
-            p.int(K.SHADOW) + "|" + p.int(K.TINT) + "|" + (if (app.isDark()) 1 else 0) + "|" + (stamps[a.pkg] ?: 0L)
+            p.int(K.SHADOW) + "|" + p.int(K.TINT) + "|" + (if (app.isDark()) 1 else 0) + "|" + (stamps[a.pkg] ?: 0L) + "|" +
+            (if (p.bool(K.IOS_ICONS)) 1 + IosIcons.salt(a) else 0)
     }
 
     fun peek(key: String): Bitmap? = cache.get(key)
@@ -139,6 +140,7 @@ class IconCache(private val ctx: Context) {
 
         c.saveLayer(rect, null)
         drawContent(c, a, rect, s, mode, dark, paint)
+        if (mode == 5) glassFinish(c, rect, s)
         // Erase everything OUTSIDE the squircle (inverse fill + DST_OUT) so corners become transparent.
         val inv = Squircle.path(rect, r)
         inv.fillType = Path.FillType.INVERSE_WINDING
@@ -153,10 +155,11 @@ class IconCache(private val ctx: Context) {
         paint.reset()
         paint.isAntiAlias = true
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = max(1f, s * 0.012f)
+        val glass = mode == 5
+        paint.strokeWidth = max(1f, s * (if (glass) 0.024f else 0.012f))
         paint.shader = LinearGradient(
             rect.left, rect.top, rect.right, rect.bottom,
-            intArrayOf(Color.argb(120, 255, 255, 255), Color.argb(0, 255, 255, 255), Color.argb(55, 255, 255, 255)),
+            intArrayOf(Color.argb(if (glass) 215 else 120, 255, 255, 255), Color.argb(if (glass) 18 else 0, 255, 255, 255), Color.argb(if (glass) 120 else 55, 255, 255, 255)),
             null, Shader.TileMode.CLAMP
         )
         val ins = paint.strokeWidth / 2f
@@ -165,6 +168,23 @@ class IconCache(private val ctx: Context) {
             paint
         )
         return bmp
+    }
+
+    /** Liquid Glass finish: soft top sheen, bottom glow and a faint inner vignette. */
+    private fun glassFinish(c: Canvas, rect: RectF, s: Int) {
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        val top = rect.top + s * 0.5f
+        p.shader = LinearGradient(0f, rect.top, 0f, top, Color.argb(85, 255, 255, 255), Color.argb(0, 255, 255, 255), Shader.TileMode.CLAMP)
+        c.drawRect(rect.left, rect.top, rect.right, top, p)
+        val bot = rect.bottom - s * 0.34f
+        p.shader = LinearGradient(0f, rect.bottom, 0f, bot, Color.argb(60, 255, 255, 255), Color.argb(0, 255, 255, 255), Shader.TileMode.CLAMP)
+        c.drawRect(rect.left, bot, rect.right, rect.bottom, p)
+        p.shader = RadialGradient(
+            rect.centerX(), rect.centerY(), s * 0.75f,
+            intArrayOf(Color.argb(0, 0, 0, 0), Color.argb(0, 0, 0, 0), Color.argb(42, 0, 0, 0)),
+            floatArrayOf(0f, 0.68f, 1f), Shader.TileMode.CLAMP
+        )
+        c.drawRect(rect, p)
     }
 
     private fun drawContent(c: Canvas, a: AppInfo, rect: RectF, s: Int, mode: Int, dark: Boolean, paint: Paint) {
@@ -179,6 +199,10 @@ class IconCache(private val ctx: Context) {
         val pm = ctx.packageManager
         val d: Drawable = try { pm.getActivityIcon(ComponentName(a.pkg, a.cls)) } catch (e: Exception) { pm.defaultActivityIcon }
         val tint = LauncherApp.get().tintColor()
+        if (LauncherApp.get().prefs.bool(K.IOS_ICONS)) {
+            val sp = IosIcons.match(a.pkg, a.label)
+            if (sp != null) { IosIcons.draw(c, sp, rect, mode, tint); return }
+        }
         val tintDark = mix(tint, Color.BLACK, 0.55f)
         val tintLight = mix(tint, Color.WHITE, 0.55f)
         val fill = Paint(Paint.ANTI_ALIAS_FLAG)

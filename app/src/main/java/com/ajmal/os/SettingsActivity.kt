@@ -134,11 +134,12 @@ class SettingsActivity : Activity() {
         choice("Glass tint", K.TINT, arrayOf("Neutral", "Blue", "Warm", "Green", "Pink", "From wallpaper"))
         seek("Edge highlights", K.EDGE, 0, 100, "%")
         seek("Shadow intensity", K.SHADOW, 0, 100, "%")
-        choice("Icon appearance", K.ICON_APPEARANCE, arrayOf("Default", "Light", "Dark", "Clear", "Tinted"))
+        choice("Icon appearance", K.ICON_APPEARANCE, arrayOf("Default", "Light", "Dark", "Clear (glass)", "Tinted", "Liquid Glass"))
 
         header("Icons")
         seek("Icon size", K.ICON_SIZE, 40, 80, " dp")
         seek("Corner radius", K.ICON_RADIUS, 10, 50, "%")
+        toggle("iOS-style system app icons", K.IOS_ICONS, "Phone, Messages, Camera, Settings, Clock, Calendar and more are redrawn in an iOS look, in every appearance")
         toggle("Large icon mode", K.LARGE_ICONS)
         toggle("Show labels", K.LABELS)
         seek("Label size", K.LABEL_SIZE, 9, 16, " sp")
