@@ -47,6 +47,7 @@ class AppIconView(ctx: Context, private val host: IconHost) : View(ctx) {
     private var kidKeys: Array<String> = emptyArray()
     private val fp = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rf = RectF()
+    private val sqp = Path()
 
     private var downX = 0f
     private var downY = 0f
@@ -142,7 +143,7 @@ class AppIconView(ctx: Context, private val host: IconHost) : View(ctx) {
                 fp.color = 0x33808080
                 rf.set(left + pad, top + pad, left + pad + s, top + pad + s)
                 val r = s * app.prefs.int(K.ICON_RADIUS) / 100f
-                c.drawRoundRect(rf, r, r, fp)
+                c.drawPath(Squircle.path(rf, r, sqp), fp)
             }
         }
         if (showLabel) {
@@ -166,11 +167,11 @@ class AppIconView(ctx: Context, private val host: IconHost) : View(ctx) {
         fp.style = Paint.Style.FILL
         fp.shader = null
         fp.color = if (app.isDark()) Color.argb(95, 255, 255, 255) else Color.argb(120, 255, 255, 255)
-        c.drawRoundRect(rf, r, r, fp)
+        c.drawPath(Squircle.path(rf, r, sqp), fp)
         fp.style = Paint.Style.STROKE
         fp.strokeWidth = max(1f, s * 0.012f)
         fp.color = Color.argb(90, 255, 255, 255)
-        c.drawRoundRect(rf, r, r, fp)
+        c.drawPath(Squircle.path(rf, r, sqp), fp)
         val p2 = s * 0.09f
         val cell = (s - 2 * p2) / 3f
         val sz = cell * 1.1f

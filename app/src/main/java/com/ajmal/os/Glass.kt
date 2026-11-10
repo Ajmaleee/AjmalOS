@@ -23,6 +23,8 @@ import kotlin.math.sqrt
 class GlassRenderer(private val app: LauncherApp) {
     @Volatile var blurred: Bitmap? = null
     @Volatile var blurPix: IntArray? = null
+    /** Much stronger blur used behind full-screen overlays (App Library, Search, Folders, Overview). */
+    @Volatile var heavy: Bitmap? = null
     var bw = 0
     var bh = 0
     var scale = 8
@@ -65,7 +67,7 @@ class GlassRenderer(private val app: LauncherApp) {
         val p = app.prefs
         wpId = currentWpId()
         if (!p.bool(K.WP_BLUR)) {
-            blurred = null; blurPix = null; gen++; notifyAll2()
+            blurred = null; blurPix = null; heavy = null; gen++; notifyAll2()
             return
         }
         val reduced = p.bool(K.REDUCED_BLUR)
@@ -76,6 +78,7 @@ class GlassRenderer(private val app: LauncherApp) {
         exec.execute {
             var bmp: Bitmap? = null
             var pix: IntArray? = null
+            var hv: Bitmap? = null
             var avg = 0xFF808080.toInt()
             var lum = 0.5f
             try {
@@ -105,14 +108,22 @@ class GlassRenderer(private val app: LauncherApp) {
                     avg = Color.rgb(ar, ag, ab)
                     lum = (0.299f * ar + 0.587f * ag + 0.114f * ab) / 255f
                     val tmp = IntArray(a.size)
-                    repeat(2) { hPass(a, tmp, w, h, rad); vPass(tmp, a, w, h, rad) }
+                    // Heavy copy first (from the sharp pixels): wide radius, 4 passes ~ Gaussian.
+                    val ha = a.copyOf()
+                    val hr = max(4, (rad * 1.8f).roundToInt())
+                    repeat(4) { hPass(ha, tmp, w, h, hr); vPass(tmp, ha, w, h, hr) }
+                    val hb = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                    hb.setPixels(ha, 0, w, 0, 0, w, h)
+                    hv = hb
+                    // Normal glass blur: 3 box passes ~ Gaussian (2 left visible box artefacts).
+                    repeat(3) { hPass(a, tmp, w, h, rad); vPass(tmp, a, w, h, rad) }
                     b.setPixels(a, 0, w, 0, 0, w, h)
                     bmp = b; pix = a
                 }
             } catch (t: Throwable) { }
-            val fb = bmp; val fp = pix; val fa = avg; val fl = lum
+            val fb = bmp; val fp = pix; val fa = avg; val fl = lum; val fh = hv
             main.post {
-                blurred = fb; blurPix = fp; scale = sc
+                blurred = fb; blurPix = fp; heavy = fh; scale = sc
                 if (fb != null) { bw = fb.width; bh = fb.height }
                 avgColor = fa; avgLum = fl
                 gen++
@@ -174,7 +185,7 @@ open class GlassFrame(ctx: Context) : FrameLayout(ctx) {
     private val dp = ctx.resources.displayMetrics.density
     private val rect = RectF()
     private val tmp = RectF()
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
     private val loc = IntArray(2)
     private val mtx = Matrix()
     private var shader: BitmapShader? = null
@@ -220,7 +231,7 @@ open class GlassFrame(ctx: Context) : FrameLayout(ctx) {
         val dark = app.isDark()
         val rad = if (fullscreen) 0f else min(radiusDp * dp, min(w, h) / 2f)
         val g = app.glass
-        val bm = g.blurred
+        val bm = if (fullscreen) (g.heavy ?: g.blurred) else g.blurred
         rect.set(0f, 0f, w, h)
         getLocationOnScreen(loc)
 

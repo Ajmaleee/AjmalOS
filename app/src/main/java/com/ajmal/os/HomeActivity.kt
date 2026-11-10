@@ -112,6 +112,23 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
         model.listeners.add { if (!drag.active) refreshAll(); library?.reload() }
         app.glass.changeCbs.add { for (v in viewCache.values) v.invalidate() }
         model.whenReady { applyAll() }
+        askWallpaperAccess()
+    }
+
+    /** Android 9 only lets a launcher read the wallpaper (needed for the blur) with storage access. */
+    private fun askWallpaperAccess() {
+        if (android.os.Build.VERSION.SDK_INT < 23) return
+        if (!prefs.bool(K.WP_BLUR)) return
+        if (checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        val sp = getSharedPreferences("ajmal_boot", MODE_PRIVATE)
+        if (sp.getBoolean("asked_wp", false)) return
+        sp.edit().putBoolean("asked_wp", true).apply()
+        requestPermissions(arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE), 7)
+    }
+
+    override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
+        super.onRequestPermissionsResult(code, perms, results)
+        if (code == 7) app.glass.reload()
     }
 
     override fun onStart() { super.onStart(); widgets.start() }
@@ -148,7 +165,7 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
         when {
             menuView != null -> dismissMenu()
             folderOverlay != null -> folderOverlay?.dismiss(true)
-            library != null -> library?.close()
+            library != null -> library?.back()
             search != null -> search?.close()
             overview != null -> overview?.close()
             editMode -> setEditing(false)

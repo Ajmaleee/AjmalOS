@@ -18,8 +18,42 @@ import java.util.zip.ZipInputStream
 import kotlin.math.max
 import kotlin.math.min
 
+/** Continuous-corner rounded rectangle (iOS-style "squircle"). */
+object Squircle {
+    private const val STEPS = 16
+    private val cs = FloatArray(STEPS + 1)
+    private val sn = FloatArray(STEPS + 1)
+
+    init {
+        val p = 2.0 / 3.0 // superellipse exponent n = 3
+        for (i in 0..STEPS) {
+            val t = i.toDouble() / STEPS * Math.PI / 2.0
+            cs[i] = Math.pow(Math.cos(t), p).toFloat()
+            sn[i] = Math.pow(Math.sin(t), p).toFloat()
+        }
+    }
+
+    fun path(rect: RectF, radius: Float, out: Path = Path()): Path {
+        out.rewind()
+        val l = rect.left; val t = rect.top; val r = rect.right; val b = rect.bottom
+        val e = min(radius * 1.35f, min(rect.width(), rect.height()) / 2f)
+        if (e <= 0.5f) { out.addRect(rect, Path.Direction.CW); return out }
+        // top-left: left edge -> top edge
+        out.moveTo(l, t + e)
+        for (i in 0..STEPS) out.lineTo(l + e * (1f - cs[i]), t + e * (1f - sn[i]))
+        // top-right: top edge -> right edge
+        for (i in STEPS downTo 0) out.lineTo(r - e * (1f - cs[i]), t + e * (1f - sn[i]))
+        // bottom-right: right edge -> bottom edge
+        for (i in 0..STEPS) out.lineTo(r - e * (1f - cs[i]), b - e * (1f - sn[i]))
+        // bottom-left: bottom edge -> left edge
+        for (i in STEPS downTo 0) out.lineTo(l + e * (1f - cs[i]), b - e * (1f - sn[i]))
+        out.close()
+        return out
+    }
+}
+
 /**
- * Renders iOS-style squircle-ish icons off the UI thread and keeps them in a size-capped LRU.
+ * Renders iOS-style squircle icons off the UI thread and keeps them in a size-capped LRU.
  * Each cached bitmap is (size + 2*pad)^2 and already contains its soft shadow.
  */
 class IconCache(private val ctx: Context) {
@@ -74,7 +108,7 @@ class IconCache(private val ctx: Context) {
         val p = Paint(Paint.ANTI_ALIAS_FLAG)
         p.color = 0xFF8E8E93.toInt()
         val pad = padFor(size).toFloat()
-        c.drawRoundRect(RectF(pad, pad, pad + size, pad + size), size * 0.23f, size * 0.23f, p)
+        c.drawPath(Squircle.path(RectF(pad, pad, pad + size, pad + size), size * 0.23f), p)
         return b
     }
 
@@ -100,16 +134,19 @@ class IconCache(private val ctx: Context) {
             sp.color = Color.argb((95 * shadow).toInt().coerceIn(0, 255), 0, 0, 0)
             sp.maskFilter = BlurMaskFilter(pad * 0.6f, BlurMaskFilter.Blur.NORMAL)
             val off = pad * 0.35f
-            c.drawRoundRect(RectF(rect.left, rect.top + off, rect.right, rect.bottom + off), r, r, sp)
+            c.drawPath(Squircle.path(RectF(rect.left, rect.top + off, rect.right, rect.bottom + off), r), sp)
         }
 
         c.saveLayer(rect, null)
         drawContent(c, a, rect, s, mode, dark, paint)
+        // Erase everything OUTSIDE the squircle (inverse fill + DST_OUT) so corners become transparent.
+        val inv = Squircle.path(rect, r)
+        inv.fillType = Path.FillType.INVERSE_WINDING
         paint.reset()
         paint.isAntiAlias = true
         paint.color = Color.BLACK
-        paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
-        c.drawRoundRect(rect, r, r, paint)
+        paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
+        c.drawPath(inv, paint)
         paint.xfermode = null
         c.restore()
 
@@ -123,9 +160,9 @@ class IconCache(private val ctx: Context) {
             null, Shader.TileMode.CLAMP
         )
         val ins = paint.strokeWidth / 2f
-        c.drawRoundRect(
-            RectF(rect.left + ins, rect.top + ins, rect.right - ins, rect.bottom - ins),
-            r - ins, r - ins, paint
+        c.drawPath(
+            Squircle.path(RectF(rect.left + ins, rect.top + ins, rect.right - ins, rect.bottom - ins), r - ins),
+            paint
         )
         return bmp
     }
