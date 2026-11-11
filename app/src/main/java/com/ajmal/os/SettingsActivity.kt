@@ -127,7 +127,7 @@ class SettingsActivity : Activity() {
 
         header("Appearance")
         choice("Theme", K.THEME, arrayOf("Automatic (system)", "Light", "Dark"))
-        choice("Glass profile", K.PROFILE, arrayOf("Ultra Lite (default)", "Balanced", "Ultra Glass"))
+        choice("Glass profile", K.PROFILE, arrayOf("Ultra Lite (default)", "Balanced", "Ultra Glass", "Pure Liquid (water glass)"))
         seek("Transparency", K.OPACITY, 0, 100, "%")
         seek("Blur intensity", K.BLUR, 0, 100, "%")
         seek("Refraction intensity", K.REFRACT, 0, 100, "%")
@@ -140,6 +140,7 @@ class SettingsActivity : Activity() {
         seek("Icon size", K.ICON_SIZE, 40, 80, " dp")
         seek("Corner radius", K.ICON_RADIUS, 10, 50, "%")
         toggle("iOS-style system app icons", K.IOS_ICONS, "Phone, Messages, Camera, Settings, Clock, Calendar and more are redrawn in an iOS look, in every appearance")
+        toggle("iOS app names", K.IOS_LABELS, "Chrome → Safari, Gmail → Mail, Play Store → App Store, Digital Wellbeing → Screen Time and so on")
         toggle("Large icon mode", K.LARGE_ICONS)
         toggle("Show labels", K.LABELS)
         seek("Label size", K.LABEL_SIZE, 9, 16, " sp")
@@ -201,6 +202,10 @@ class SettingsActivity : Activity() {
         }
         seek("Wallpaper dimming", K.DIM, 0, 80, "%")
 
+        header("Privacy")
+        toggle("Fingerprint for Hidden folder", K.HIDDEN_BIO, "App Library → Hidden opens with your fingerprint or the passcode")
+        action("Change Hidden folder passcode", "Default is 7429") { changePin() }
+
         header("Performance")
         action("Apply Ultra Lite preset", "Cached blur, minimal refraction, light shadows") {
             prefs.set(K.PROFILE, 0); prefs.set(K.REDUCED_BLUR, true); prefs.set(K.REDUCED_REFR, true)
@@ -228,6 +233,25 @@ class SettingsActivity : Activity() {
         action("Reset all settings", null) { prefs.resetAll(); recreate() }
         action("Set Ajmal OS as default home app", null) {
             try { startActivity(Intent(Settings.ACTION_HOME_SETTINGS)) } catch (t: Throwable) { }
+        }
+    }
+
+    private fun changePin() {
+        fun ask(title: String, ok: (String) -> Unit) {
+            val et = android.widget.EditText(this)
+            et.inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            et.filters = arrayOf(android.text.InputFilter.LengthFilter(8))
+            AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle(title).setView(et)
+                .setPositiveButton("OK") { _, _ -> ok(et.text.toString()) }
+                .setNegativeButton("Cancel", null).show()
+        }
+        ask("Current passcode") { cur ->
+            if (cur != prefs.int(K.HIDDEN_PIN).toString()) { toast("Wrong passcode"); return@ask }
+            ask("New passcode (4–8 digits)") { n ->
+                if (n.length < 4) toast("Too short")
+                else { prefs.set(K.HIDDEN_PIN, n.toInt()); toast("Passcode changed") }
+            }
         }
     }
 

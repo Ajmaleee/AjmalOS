@@ -30,6 +30,7 @@ class AppIconView(ctx: Context, private val host: IconHost) : View(ctx) {
     private val app = LauncherApp.get()
     private val dp = ctx.resources.displayMetrics.density
     private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
+    private val hold = Touch.hold(ctx)
     private val spring = Spring { v -> scaleX = v; scaleY = v }
 
     var item: Item? = null
@@ -214,14 +215,16 @@ class AppIconView(ctx: Context, private val host: IconHost) : View(ctx) {
                 longFired = false; dragging = false; moved = false
                 if (app.prefs.bool(K.ICON_ANIM)) spring.to(0.95f, 700f)
                 if (host.editing) parent?.requestDisallowInterceptTouchEvent(true)
-                else postDelayed(lp, ViewConfiguration.getLongPressTimeout().toLong())
+                else postDelayed(lp, Touch.LONG_MS)
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (dragging) { host.dragMove(e.rawX, e.rawY); return true }
                 val dx = e.rawX - downX
                 val dy = e.rawY - downY
-                if (dx * dx + dy * dy > slop * slop) {
+                // Before the long press fires (and outside edit mode) tolerate finger jitter; drag needs the small slop.
+                val lim = if (host.editing || longFired) slop.toFloat() else hold
+                if (dx * dx + dy * dy > lim * lim) {
                     moved = true
                     if (host.editing || longFired) {
                         if (host.canDrag(this)) {
@@ -401,6 +404,7 @@ class DockFrame(ctx: Context) : GlassFrame(ctx) {
 /** Wraps a real AppWidgetHostView; adds long-press + drag without stealing normal widget touches. */
 class WidgetFrame(ctx: Context, private val host: IconHost) : FrameLayout(ctx) {
     private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
+    private val hold = Touch.hold(ctx)
     private val dp = ctx.resources.displayMetrics.density
     private var downX = 0f
     private var downY = 0f
@@ -425,12 +429,12 @@ class WidgetFrame(ctx: Context, private val host: IconHost) : FrameLayout(ctx) {
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = e.rawX; downY = e.rawY; longFired = false; dragging = false
-                if (!host.editing) postDelayed(lp, ViewConfiguration.getLongPressTimeout().toLong())
+                if (!host.editing) postDelayed(lp, Touch.LONG_MS)
             }
             MotionEvent.ACTION_MOVE -> {
                 val dx = e.rawX - downX
                 val dy = e.rawY - downY
-                if (!longFired && dx * dx + dy * dy > slop * slop) removeCallbacks(lp)
+                if (!longFired && dx * dx + dy * dy > hold * hold) removeCallbacks(lp)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> removeCallbacks(lp)
         }

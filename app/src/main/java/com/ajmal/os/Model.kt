@@ -149,8 +149,31 @@ class LauncherModel(private val app: LauncherApp) {
                 )
             )
         }
-        out.sortBy { it.lower }
-        return out
+        labelsIos = app.prefs.bool(K.IOS_LABELS)
+        val res = if (labelsIos) iosNames(out) else out
+        res.sortBy { it.lower }
+        return res
+    }
+
+    /** True when the current app snapshot was built with iOS names. */
+    @Volatile var labelsIos = true
+
+    /** Renames system apps to their iOS equivalents (Chrome -> Safari ...); never creates duplicate names. */
+    private fun iosNames(src: List<AppInfo>): ArrayList<AppInfo> {
+        val used = HashSet<String>()
+        val next = arrayOfNulls<String>(src.size)
+        for ((i, a) in src.withIndex()) {
+            val n = IosIcons.iosLabel(a.pkg, a.label)
+            next[i] = n
+            if (n == a.label) used.add(n.lowercase())
+        }
+        val res = ArrayList<AppInfo>()
+        for ((i, a) in src.withIndex()) {
+            var n = next[i]!!
+            if (n != a.label && !used.add(n.lowercase())) n = a.label
+            res.add(if (n == a.label) a else AppInfo(a.pkg, a.cls, n, a.installTime, a.system, a.category))
+        }
+        return res
     }
 
     private fun updateApps(list: List<AppInfo>) {

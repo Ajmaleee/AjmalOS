@@ -32,7 +32,7 @@ class IosSpec(
  */
 object IosIcons {
     private const val INK = 1
-    private val byId: Map<String, IosSpec> = IosIconData.all.associateBy { it.id }
+    private val byId: Map<String, IosSpec> = (IosIconData.all + IosIconDataExtra.all).associateBy { it.id }
     private val matched = ConcurrentHashMap<String, String>()
     private val paths = ConcurrentHashMap<String, Path>()
 
@@ -43,11 +43,69 @@ object IosIcons {
         return if (id.isEmpty()) null else byId[id]
     }
 
+    private val extraIds: Set<String> = IosIconDataExtra.all.map { it.id }.toSet()
+
+    /** True for the redrawn third-party/Google glyphs: used only in Clear/Tinted, real app icons are used otherwise. */
+    fun isExtra(sp: IosSpec): Boolean = sp.id in extraIds
+
+    /** iOS display names for the spec ids that have an iOS counterpart. */
+    private val names = mapOf(
+        "settings" to "Settings", "phone" to "Phone", "contacts" to "Contacts", "messages" to "Messages",
+        "camera" to "Camera", "photos" to "Photos", "clock" to "Clock", "calculator" to "Calculator",
+        "calendar" to "Calendar", "maps" to "Maps", "notes" to "Notes", "music" to "Music",
+        "browser" to "Safari", "mail" to "Mail", "files" to "Files", "weather" to "Weather",
+        "store" to "App Store", "recorder" to "Voice Memos", "facetime" to "FaceTime", "books" to "Books",
+        "tv" to "TV", "screentime" to "Screen Time", "news" to "News", "gamecenter" to "Game Center",
+        "carplay" to "CarPlay", "assistant" to "Siri"
+    )
+
+    /** The iOS name for a system app (e.g. Chrome -> Safari), or the original label when there is none. */
+    fun iosLabel(pkg: String, label: String): String {
+        val id = idFor(pkg, label) ?: return label
+        return names[id] ?: label
+    }
+
     private fun idFor(pkg: String, label: String): String? {
         val p = pkg.lowercase()
         val l = label.lowercase().trim()
-        if (p.contains("youtube")) return null
         return when {
+            // third-party / Google apps first, so generic substring rules below cannot swallow them
+            p == "com.google.android.youtube" -> "youtube"
+            p.contains("youtube.music") -> "ytmusic"
+            p == "org.telegram.messenger" || p.startsWith("org.telegram") -> "telegram"
+            p == "com.whatsapp" || p.startsWith("com.whatsapp.") -> "whatsapp"
+            p == "com.discord" -> "discord"
+            p == "com.openai.chatgpt" -> "chatgpt"
+            p == "com.anthropic.claude" -> "claude"
+            p == "com.reddit.frontpage" -> "reddit"
+            p == "com.instagram.android" -> "instagram"
+            p == "com.snapchat.android" -> "snapchat"
+            p == "com.spotify.music" -> "spotify"
+            p == "com.roblox.client" -> "roblox"
+            p == "com.github.android" -> "github"
+            p == "com.google.android.googlequicksearchbox" -> "google"
+            p == "com.google.android.apps.bard" || p.contains("gemini") -> "gemini"
+            p == "com.google.android.apps.docs" -> "drive"
+            p == "com.google.android.apps.googleassistant" -> "assistant"
+            p == "com.google.android.apps.tachyon" -> "facetime"
+            p == "com.google.android.apps.books" -> "books"
+            p == "com.google.android.videos" -> "tv"
+            p == "com.google.android.apps.wellbeing" -> "screentime"
+            p == "com.google.android.apps.magazines" -> "news"
+            p == "com.google.android.play.games" -> "gamecenter"
+            p == "com.google.android.projection.gearhead" -> "carplay"
+            p == "com.google.android.inputmethod.latin" -> "keyboard"
+            p == "org.videolan.vlc" -> "vlc"
+            p == "com.pittvandewitt.wavelet" -> "equalizer"
+            p == "com.csparks113.morsecodeapp" -> "morse"
+            p == "app.harukan.diary" -> "diary"
+            p == "com.missionjeet.app" -> "mission"
+            p.startsWith("com.aistudio.homework") -> "homework"
+            p.startsWith("com.aistudio.docreader") -> "docreader"
+            p == "ai.regainapp" -> "regain"
+            p == "com.hmdglobal.support" -> "support"
+            p.contains("powersaving") || p.contains("batteryprotect") || p.contains("powermonitor") -> "battery"
+            // system apps
             p == "com.android.settings" || l == "settings" -> "settings"
             p.contains("dialer") || l == "phone" -> "phone"
             p.contains("contacts") || l == "contacts" -> "contacts"
@@ -62,7 +120,7 @@ object IosIcons {
             p.contains(".music") || l == "music" -> "music"
             p == "com.android.chrome" || p.contains("browser") || l == "chrome" || l == "browser" || l == "internet" -> "browser"
             p == "com.google.android.gm" || p.contains("email") || l == "gmail" || l == "email" || l == "mail" -> "mail"
-            p.contains("documentsui") || p.contains("filemanager") || l == "files" || l == "file manager" -> "files"
+            p.contains("documentsui") || p.contains("filemanager") || p.contains("nbu.files") || l == "files" || l == "file manager" -> "files"
             p.contains("weather") || l == "weather" -> "weather"
             p == "com.android.vending" -> "store"
             p.contains("recorder") || l.contains("voice memos") -> "recorder"
@@ -106,6 +164,7 @@ object IosIcons {
             2 -> if (!sp.darkNative) { c1 = 0xFF3A3A3F.toInt(); c2 = 0xFF121214.toInt() }
             3 -> { c1 = Color.argb(115, 255, 255, 255); c2 = Color.argb(46, 255, 255, 255) }
             4 -> { c1 = mix(tint, Color.BLACK, 0.55f); c2 = mix(tint, Color.BLACK, 0.75f) }
+            5 -> { c1 = mix(c1, Color.WHITE, 0.16f); c2 = mix(c2, Color.WHITE, 0.05f) }
         }
         val ink = when (mode) {
             3 -> Color.WHITE
@@ -131,6 +190,15 @@ object IosIcons {
             p.reset()
             p.isAntiAlias = true
             p.color = (base and 0x00FFFFFF) or (alpha shl 24)
+            if (mode == 5 && sh.kind != 2 && sh.blend != 1) {
+                // glyphs float above the glass: soft contact shadow
+                val shp = Paint(Paint.ANTI_ALIAS_FLAG)
+                shp.color = Color.argb(36, 0, 0, 0)
+                if (sh.kind == 1) { shp.style = Paint.Style.STROKE; shp.strokeWidth = sh.w; shp.strokeCap = Paint.Cap.ROUND; shp.strokeJoin = Paint.Join.ROUND }
+                c.save(); c.translate(0f, 1.9f)
+                c.drawPath(path(sh.d, sh.kind == 0 && sh.eo), shp)
+                c.restore()
+            }
             when (sh.kind) {
                 0 -> {
                     if (sh.blend == 1 && !mono) {

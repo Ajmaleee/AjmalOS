@@ -5,13 +5,17 @@ import android.content.Context
 import android.graphics.*
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import android.widget.FrameLayout
 import java.util.concurrent.Executors
+import kotlin.math.abs
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -23,6 +27,8 @@ import kotlin.math.sqrt
 class GlassRenderer(private val app: LauncherApp) {
     @Volatile var blurred: Bitmap? = null
     @Volatile var blurPix: IntArray? = null
+    /** Lightly blurred copy used by Pure Liquid so the wallpaper stays readable through the lens. */
+    @Volatile var clearPix: IntArray? = null
     /** Much stronger blur used behind full-screen overlays (App Library, Search, Folders, Overview). */
     @Volatile var heavy: Bitmap? = null
     var bw = 0
@@ -67,7 +73,7 @@ class GlassRenderer(private val app: LauncherApp) {
         val p = app.prefs
         wpId = currentWpId()
         if (!p.bool(K.WP_BLUR)) {
-            blurred = null; blurPix = null; heavy = null; gen++; notifyAll2()
+            blurred = null; blurPix = null; clearPix = null; heavy = null; gen++; notifyAll2()
             return
         }
         val reduced = p.bool(K.REDUCED_BLUR)
@@ -78,6 +84,7 @@ class GlassRenderer(private val app: LauncherApp) {
         exec.execute {
             var bmp: Bitmap? = null
             var pix: IntArray? = null
+            var cpx: IntArray? = null
             var hv: Bitmap? = null
             var avg = 0xFF808080.toInt()
             var lum = 0.5f
@@ -115,15 +122,19 @@ class GlassRenderer(private val app: LauncherApp) {
                     val hb = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                     hb.setPixels(ha, 0, w, 0, 0, w, h)
                     hv = hb
+                    val ca = a.copyOf()
+                    val cr = max(1, rad / 3)
+                    repeat(2) { hPass(ca, tmp, w, h, cr); vPass(tmp, ca, w, h, cr) }
+                    cpx = ca
                     // Normal glass blur: 3 box passes ~ Gaussian (2 left visible box artefacts).
                     repeat(3) { hPass(a, tmp, w, h, rad); vPass(tmp, a, w, h, rad) }
                     b.setPixels(a, 0, w, 0, 0, w, h)
                     bmp = b; pix = a
                 }
             } catch (t: Throwable) { }
-            val fb = bmp; val fp = pix; val fa = avg; val fl = lum; val fh = hv
+            val fb = bmp; val fp = pix; val fc = cpx; val fa = avg; val fl = lum; val fh = hv
             main.post {
-                blurred = fb; blurPix = fp; heavy = fh; scale = sc
+                blurred = fb; blurPix = fp; clearPix = fc; heavy = fh; scale = sc
                 if (fb != null) { bw = fb.width; bh = fb.height }
                 avgColor = fa; avgLum = fl
                 gen++
@@ -195,6 +206,9 @@ open class GlassFrame(ctx: Context) : FrameLayout(ctx) {
     private var pX = Int.MIN_VALUE
     private var pY = Int.MIN_VALUE
     private var pGen = -1
+    private var pForce = false
+    private var pAt = 0L
+    private val pExact = Runnable { pForce = true; invalidate() }
     private var pRev = -1
     private var sW = 0f
     private var sH = 0f
@@ -234,6 +248,7 @@ open class GlassFrame(ctx: Context) : FrameLayout(ctx) {
         val bm = if (fullscreen) (g.heavy ?: g.blurred) else g.blurred
         rect.set(0f, 0f, w, h)
         getLocationOnScreen(loc)
+        if (prof == 3 && !fullscreen) { drawLiquid(c, w, h, bm); return }
 
         // Soft layered shadow (drawn outside the bounds; parents must not clip children).
         val sh = p.int(K.SHADOW) / 100f * shadowScale
@@ -337,6 +352,243 @@ open class GlassFrame(ctx: Context) : FrameLayout(ctx) {
         paint.style = Paint.Style.FILL
     }
 
+    // =============================================================== Pure Liquid
+
+    private val sqPath = Path()
+    private val sqTmp = Path()
+    private var liquid: Bitmap? = null
+    private var lShader: BitmapShader? = null
+    private var lX = Int.MIN_VALUE
+    private var lY = Int.MIN_VALUE
+    private var lGen = -1
+    private var lRev = -1
+    private var lAt = 0L
+    private var lForce = false
+    private val lExact = Runnable { lForce = true; invalidate() }
+    private var lW = 0f
+    private var lH = 0f
+    private var lEdge = -1f
+    private var rimShader: LinearGradient? = null
+    private var rim2Shader: LinearGradient? = null
+    private var topShader: LinearGradient? = null
+    private var brShader: LinearGradient? = null
+    private var fringeShader: LinearGradient? = null
+
+    /**
+     * Pure Liquid: a thick, water-filled glass slab with Apple-style continuous corners. The backdrop is
+     * lens-refracted at the rim (with colour dispersion), gently rippled inside, saturated, and finished
+     * with a bright fresnel rim, a refractive bulge at the bottom-right and a soft specular sheen.
+     */
+    private fun drawLiquid(c: Canvas, w: Float, h: Float, bm: Bitmap?) {
+        val p = app.prefs
+        val g = app.glass
+        val dark = app.isDark()
+        val rr = min(radiusDp * dp, min(w, h) / 2f)
+        rect.set(0f, 0f, w, h)
+        Squircle.path(rect, rr, sqPath)
+
+        val sh = p.int(K.SHADOW) / 100f * shadowScale
+        paint.style = Paint.Style.FILL
+        paint.shader = null
+        if (sh > 0.02f) {
+            for (i in 1..4) {
+                val e = i * 2.4f * dp
+                tmp.set(-e * 0.7f, e * 0.3f, w + e * 0.7f, h + e)
+                paint.color = Color.argb((60f * sh / i).toInt().coerceIn(0, 255), 0, 0, 0)
+                c.drawPath(Squircle.path(tmp, rr + e * 0.7f, sqTmp), paint)
+            }
+        }
+
+        val lb = if (bm != null) liquidBitmap(g, w.toInt(), h.toInt(), rr) else null
+        if (lb != null) {
+            if (lShader == null) lShader = BitmapShader(lb, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+            mtx.setScale(w / lb.width, h / lb.height)
+            lShader!!.setLocalMatrix(mtx)
+            paint.shader = lShader
+            paint.color = Color.WHITE
+            c.drawPath(sqPath, paint)
+            paint.shader = null
+        }
+
+        // Very light surface tint (the water already carries the colour).
+        val a = (0.03f + 0.30f * (100 - p.int(K.OPACITY)) / 100f) * strength + (if (lb == null) 0.26f else 0f)
+        paint.color = (app.glassBase(dark) and 0xFFFFFF) or (al(a.coerceAtMost(0.8f)) shl 24)
+        c.drawPath(sqPath, paint)
+
+        val edge = (p.int(K.EDGE) / 100f).coerceIn(0.15f, 1f)
+        if (w != lW || h != lH || edge != lEdge) {
+            lW = w; lH = h; lEdge = edge
+            rimShader = LinearGradient(0f, 0f, w, h,
+                intArrayOf(Color.argb(al(0.98f * edge), 255, 255, 255), Color.argb(al(0.16f * edge), 255, 255, 255),
+                    Color.argb(al(0.30f * edge), 255, 255, 255), Color.argb(al(0.80f * edge), 255, 255, 255)),
+                floatArrayOf(0f, 0.42f, 0.64f, 1f), Shader.TileMode.CLAMP)
+            rim2Shader = LinearGradient(0f, 0f, w, h,
+                intArrayOf(Color.argb(al(0.40f * edge), 255, 255, 255), Color.argb(0, 255, 255, 255), Color.argb(al(0.30f * edge), 255, 255, 255)),
+                floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
+            topShader = LinearGradient(0f, 0f, 0f, h * 0.46f, Color.argb(al(0.30f * edge + 0.03f), 255, 255, 255), Color.argb(0, 255, 255, 255), Shader.TileMode.CLAMP)
+            brShader = LinearGradient(w * 0.4f, h * 0.4f, w, h, Color.argb(0, 255, 255, 255), Color.argb(al(0.34f * edge), 255, 255, 255), Shader.TileMode.CLAMP)
+            fringeShader = LinearGradient(w * 0.5f, h * 0.5f, w, h,
+                intArrayOf(Color.argb(0, 120, 200, 255), Color.argb(al(0.30f * edge), 110, 190, 255), Color.argb(al(0.34f * edge), 255, 120, 225)),
+                floatArrayOf(0f, 0.7f, 1f), Shader.TileMode.CLAMP)
+        }
+        // soft sheen from the top and refractive glow gathering at the bottom-right
+        paint.shader = topShader
+        c.drawPath(sqPath, paint)
+        paint.style = Paint.Style.STROKE
+        paint.shader = brShader
+        paint.strokeWidth = 5.5f * dp
+        tmp.set(3.2f * dp, 3.2f * dp, w - 3.2f * dp, h - 3.2f * dp)
+        c.drawPath(Squircle.path(tmp, max(0f, rr - 3.2f * dp), sqTmp), paint)
+        if (!p.bool(K.REDUCED_REFR)) {
+            paint.shader = fringeShader
+            paint.strokeWidth = 1.2f * dp
+            tmp.set(3.8f * dp, 3.8f * dp, w - 3.8f * dp, h - 3.8f * dp)
+            c.drawPath(Squircle.path(tmp, max(0f, rr - 3.8f * dp), sqTmp), paint)
+        }
+        // inner and outer fresnel rims
+        paint.shader = rim2Shader
+        paint.strokeWidth = 1.1f * dp
+        tmp.set(2.4f * dp, 2.4f * dp, w - 2.4f * dp, h - 2.4f * dp)
+        c.drawPath(Squircle.path(tmp, max(0f, rr - 2.4f * dp), sqTmp), paint)
+        paint.shader = rimShader
+        paint.strokeWidth = 1.5f * dp
+        tmp.set(0.75f * dp, 0.75f * dp, w - 0.75f * dp, h - 0.75f * dp)
+        c.drawPath(Squircle.path(tmp, max(0f, rr - 0.75f * dp), sqTmp), paint)
+        paint.shader = null
+        paint.style = Paint.Style.FILL
+    }
+
+    /** Per-panel lens map: refraction + dispersion + ripples + water shading, sampled from the lightly blurred wallpaper. */
+    private fun liquidBitmap(g: GlassRenderer, w: Int, h: Int, rr: Float): Bitmap? {
+        val pix = g.clearPix ?: g.blurPix ?: return null
+        val rev = app.prefs.rev
+        var sc = 3
+        while ((w / sc) * (h / sc) > 60000) sc++
+        val pw = max(8, w / sc)
+        val ph = max(8, h / sc)
+        val cur = liquid
+        if (cur != null && cur.width == pw && cur.height == ph && g.gen == lGen && rev == lRev) {
+            val moved = abs(loc[0] - lX) + abs(loc[1] - lY)
+            if (moved == 0) return cur
+            if (!lForce && (moved <= 40 || SystemClock.uptimeMillis() - lAt < 90)) {
+                removeCallbacks(lExact); postDelayed(lExact, 130); return cur
+            }
+        }
+        lForce = false
+        lAt = SystemClock.uptimeMillis()
+
+        val bw = g.bw; val bh = g.bh
+        val gs = g.scale.toFloat()
+        val reduced = app.prefs.bool(K.REDUCED_REFR)
+        val amt = (0.45f + app.prefs.int(K.REFRACT) / 100f * 0.9f).coerceAtMost(1.2f) * (if (reduced) 0.5f else 1f)
+        val hw = w / 2f; val hh = h / 2f
+        val R = min(rr * 1.35f, min(hw, hh))
+        val band = (min(w, h) * 0.30f).coerceIn(9f * dp, 24f * dp).coerceAtMost(min(hw, hh) * 0.9f)
+        val amp = band * (0.35f + 0.65f * amt)
+        val mag = 1f + 0.035f * amt
+        val rimW = 6.5f * dp
+        val ripple = 7f * (0.5f + 0.5f * amt)
+        val caustic = h > 56f * dp
+        val out = IntArray(pw * ph)
+        val ox = loc[0].toFloat(); val oy = loc[1].toFloat()
+        val lx = -0.57f; val ly = -0.82f
+
+        for (j in 0 until ph) {
+            val y = (j + 0.5f) * h / ph
+            val yy = y / h
+            for (i in 0 until pw) {
+                val x = (i + 0.5f) * w / pw
+                val dx = abs(x - hw) - (hw - R)
+                val dy = abs(y - hh) - (hh - R)
+                val sx = if (x < hw) -1f else 1f
+                val sy = if (y < hh) -1f else 1f
+                var sd: Float; var nx: Float; var ny: Float
+                if (dx > 0f && dy > 0f) {
+                    val l3 = Math.cbrt((dx * dx * dx + dy * dy * dy).toDouble()).toFloat()
+                    sd = l3 - R
+                    val a2 = dx * dx; val b2 = dy * dy
+                    val n = sqrt(a2 * a2 + b2 * b2) + 1e-4f
+                    nx = sx * a2 / n; ny = sy * b2 / n
+                } else if (dx > 0f) { sd = dx - R; nx = sx; ny = 0f }
+                else if (dy > 0f) { sd = dy - R; nx = 0f; ny = sy }
+                else if (dx > dy) { sd = dx - R; nx = sx; ny = 0f }
+                else { sd = dy - R; nx = 0f; ny = sy }
+                val d = max(0f, -sd)
+                val u = (d / band).coerceIn(0f, 1f)
+                val v = 1f - u
+                val f = v * v * sqrt(v)
+
+                // interior: slight magnification + slow water ripple
+                val mx = hw + (x - hw) / mag
+                val my = hh + (y - hh) / mag
+                val wob = 1f - f * 0.6f
+                val rx = (sin(x * 0.035f + y * 0.012f + 0.7f) + 0.6f * sin(y * 0.047f - x * 0.02f + 2.1f)) * ripple * 0.5f * wob
+                val ry = (sin(x * 0.022f - y * 0.04f + 1.3f) + 0.6f * sin(x * 0.051f + y * 0.017f)) * ripple * 0.5f * wob
+                val ex = nx * amp * f
+                val ey = ny * amp * f
+                var cr: Int; var cg: Int; var cb: Int
+                if (f > 0.02f) {
+                    val s1 = bilinear(pix, bw, bh, (ox + mx + rx + ex) / gs, (oy + my + ry + ey) / gs)
+                    val s2 = bilinear(pix, bw, bh, (ox + mx + rx + ex * 0.93f) / gs, (oy + my + ry + ey * 0.93f) / gs)
+                    val s3 = bilinear(pix, bw, bh, (ox + mx + rx + ex * 0.86f) / gs, (oy + my + ry + ey * 0.86f) / gs)
+                    cr = (s1 shr 16) and 255; cg = (s2 shr 8) and 255; cb = s3 and 255
+                } else {
+                    val s1 = bilinear(pix, bw, bh, (ox + mx + rx) / gs, (oy + my + ry) / gs)
+                    cr = (s1 shr 16) and 255; cg = (s1 shr 8) and 255; cb = s1 and 255
+                }
+                // saturated, slightly milky water
+                val lum = 0.299f * cr + 0.587f * cg + 0.114f * cb
+                var fr = lum + (cr - lum) * 1.30f
+                var fg = lum + (cg - lum) * 1.30f
+                var fb = lum + (cb - lum) * 1.30f
+                fr += (255f - fr) * 0.05f; fg += (255f - fg) * 0.05f; fb += (255f - fb) * 0.05f
+
+                // fresnel rim: brightest facing the light (top-left), secondary bulge bottom-right
+                val ndl = nx * lx + ny * ly
+                val t = (1f - d / rimW).coerceIn(0f, 1f)
+                var hl = t * t * (0.16f + 0.60f * max(ndl, 0f) + 0.30f * max(-ndl, 0f))
+                // dark meniscus just inside the rim gives the slab its thickness
+                val dm = (d - rimW * 1.5f) / (rimW * 0.9f)
+                val dark = 0.10f * exp(-dm * dm) * (1f - max(ndl, 0f) * 0.7f)
+                // water surface caustics
+                if (caustic && d > rimW) {
+                    val yc = 0.70f + sin(x * 0.028f + 1.2f) * 0.012f + sin(x * 0.011f) * 0.008f
+                    val q = (yy - yc) / 0.035f
+                    hl += 0.07f * exp(-q * q)
+                    hl += 0.05f * (yy - 0.72f).coerceIn(0f, 0.28f) / 0.28f
+                }
+                hl += 0.09f * (1f - yy) * (1f - yy)
+                val k = 1f - dark
+                fr = (fr * k + (255f - fr * k) * hl.coerceIn(0f, 1f))
+                fg = (fg * k + (255f - fg * k) * hl.coerceIn(0f, 1f))
+                fb = (fb * k + (255f - fb * k) * hl.coerceIn(0f, 1f))
+                out[j * pw + i] = (0xFF shl 24) or (fr.toInt().coerceIn(0, 255) shl 16) or (fg.toInt().coerceIn(0, 255) shl 8) or fb.toInt().coerceIn(0, 255)
+            }
+        }
+        val bmp = Bitmap.createBitmap(pw, ph, Bitmap.Config.ARGB_8888)
+        bmp.setPixels(out, 0, pw, 0, 0, pw, ph)
+        liquid = bmp
+        lShader = null
+        lX = loc[0]; lY = loc[1]; lGen = g.gen; lRev = rev
+        return bmp
+    }
+
+    private fun bilinear(pix: IntArray, bw: Int, bh: Int, x: Float, y: Float): Int {
+        val fx = (x - 0.5f).coerceIn(0f, bw - 1f)
+        val fy = (y - 0.5f).coerceIn(0f, bh - 1f)
+        val x0 = fx.toInt(); val y0 = fy.toInt()
+        val x1 = min(x0 + 1, bw - 1); val y1 = min(y0 + 1, bh - 1)
+        val tx = fx - x0; val ty = fy - y0
+        val a = pix[y0 * bw + x0]; val b = pix[y0 * bw + x1]
+        val c = pix[y1 * bw + x0]; val d = pix[y1 * bw + x1]
+        fun ch(s: Int): Int {
+            val top = ((a shr s) and 255) * (1f - tx) + ((b shr s) and 255) * tx
+            val bot = ((c shr s) and 255) * (1f - tx) + ((d shr s) and 255) * tx
+            return (top * (1f - ty) + bot * ty).toInt()
+        }
+        return (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+    }
+
     /** Small pre-refracted copy of the blurred wallpaper region behind this panel. */
     private fun panelBitmap(g: GlassRenderer, w: Int, h: Int, prof: Int): Bitmap? {
         val pix = g.blurPix ?: return null
@@ -345,9 +597,16 @@ open class GlassFrame(ctx: Context) : FrameLayout(ctx) {
         val ph = max(4, h / sc)
         val rev = app.prefs.rev
         val cur = panel
-        if (cur != null && cur.width == pw && cur.height == ph && loc[0] == pX && loc[1] == pY &&
-            g.gen == pGen && rev == pRev
-        ) return cur
+        if (cur != null && cur.width == pw && cur.height == ph && g.gen == pGen && rev == pRev) {
+            val moved = abs(loc[0] - pX) + abs(loc[1] - pY)
+            if (moved == 0) return cur
+            // Moving panel (animation): reuse the old refraction and redo it exactly once things settle.
+            if (!pForce && (moved <= 40 || SystemClock.uptimeMillis() - pAt < 90)) {
+                removeCallbacks(pExact); postDelayed(pExact, 130); return cur
+            }
+        }
+        pForce = false
+        pAt = SystemClock.uptimeMillis()
 
         val bw = g.bw
         val bh = g.bh

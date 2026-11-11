@@ -139,8 +139,13 @@ class IconCache(private val ctx: Context) {
         }
 
         c.saveLayer(rect, null)
-        drawContent(c, a, rect, s, mode, dark, paint)
-        if (mode == 5) glassFinish(c, rect, s)
+        if (mode == 5) {
+            // body is slightly see-through (the wallpaper shows through the glass); the finish stays opaque
+            c.saveLayerAlpha(rect, 232)
+            drawContent(c, a, rect, s, mode, dark, paint)
+            c.restore()
+            glassFinish(c, rect, s, r)
+        } else drawContent(c, a, rect, s, mode, dark, paint)
         // Erase everything OUTSIDE the squircle (inverse fill + DST_OUT) so corners become transparent.
         val inv = Squircle.path(rect, r)
         inv.fillType = Path.FillType.INVERSE_WINDING
@@ -170,21 +175,56 @@ class IconCache(private val ctx: Context) {
         return bmp
     }
 
-    /** Liquid Glass finish: soft top sheen, bottom glow and a faint inner vignette. */
-    private fun glassFinish(c: Canvas, rect: RectF, s: Int) {
+    /**
+     * Liquid Glass finish (iOS 26 style): specular dome from the top-left, glow gathered at the bottom,
+     * a thick refractive rim with soft falloff, a dark meniscus just inside it and a faint colour fringe
+     * along the bottom-right edge.
+     */
+    private fun glassFinish(c: Canvas, rect: RectF, s: Int, r: Float) {
         val p = Paint(Paint.ANTI_ALIAS_FLAG)
-        val top = rect.top + s * 0.5f
-        p.shader = LinearGradient(0f, rect.top, 0f, top, Color.argb(85, 255, 255, 255), Color.argb(0, 255, 255, 255), Shader.TileMode.CLAMP)
-        c.drawRect(rect.left, rect.top, rect.right, top, p)
-        val bot = rect.bottom - s * 0.34f
-        p.shader = LinearGradient(0f, rect.bottom, 0f, bot, Color.argb(60, 255, 255, 255), Color.argb(0, 255, 255, 255), Shader.TileMode.CLAMP)
-        c.drawRect(rect.left, bot, rect.right, rect.bottom, p)
+        val white = Color.argb(0, 255, 255, 255)
         p.shader = RadialGradient(
-            rect.centerX(), rect.centerY(), s * 0.75f,
-            intArrayOf(Color.argb(0, 0, 0, 0), Color.argb(0, 0, 0, 0), Color.argb(42, 0, 0, 0)),
-            floatArrayOf(0f, 0.68f, 1f), Shader.TileMode.CLAMP
+            rect.left + s * 0.30f, rect.top + s * 0.08f, s * 0.95f,
+            intArrayOf(Color.argb(125, 255, 255, 255), Color.argb(36, 255, 255, 255), white),
+            floatArrayOf(0f, 0.45f, 1f), Shader.TileMode.CLAMP
         )
         c.drawRect(rect, p)
+        val bot = rect.bottom - s * 0.38f
+        p.shader = LinearGradient(0f, rect.bottom, 0f, bot, Color.argb(72, 255, 255, 255), white, Shader.TileMode.CLAMP)
+        c.drawRect(rect.left, bot, rect.right, rect.bottom, p)
+
+        val tmp = RectF()
+        fun ring(inset: Float, width: Float): Path {
+            val ins = inset + width / 2f
+            tmp.set(rect.left + ins, rect.top + ins, rect.right - ins, rect.bottom - ins)
+            return Squircle.path(tmp, max(0f, r - ins))
+        }
+        p.style = Paint.Style.STROKE
+        // refractive rim: stacked strokes -> smooth falloff from the edge inward
+        p.shader = LinearGradient(
+            rect.left, rect.top, rect.right, rect.bottom,
+            intArrayOf(Color.WHITE, white, Color.argb(235, 255, 255, 255)), floatArrayOf(0f, 0.52f, 1f), Shader.TileMode.CLAMP
+        )
+        val widths = floatArrayOf(0.20f, 0.14f, 0.085f, 0.04f)
+        val alphas = intArrayOf(12, 20, 34, 52)
+        for (k in widths.indices) {
+            p.strokeWidth = s * widths[k]
+            p.alpha = alphas[k]
+            c.drawPath(ring(0f, s * widths[k]), p)
+        }
+        // dark meniscus just inside the rim gives the slab thickness
+        p.shader = null
+        p.color = Color.argb(24, 0, 0, 0)
+        p.strokeWidth = s * 0.05f
+        c.drawPath(ring(s * 0.19f, s * 0.05f), p)
+        // chromatic fringe on the lower-right edge
+        p.shader = LinearGradient(
+            rect.centerX(), rect.centerY(), rect.right, rect.bottom,
+            intArrayOf(Color.argb(0, 110, 190, 255), Color.argb(95, 110, 190, 255), Color.argb(110, 255, 120, 225)),
+            floatArrayOf(0f, 0.72f, 1f), Shader.TileMode.CLAMP
+        )
+        p.strokeWidth = s * 0.022f
+        c.drawPath(ring(s * 0.07f, s * 0.022f), p)
     }
 
     private fun drawContent(c: Canvas, a: AppInfo, rect: RectF, s: Int, mode: Int, dark: Boolean, paint: Paint) {
@@ -201,7 +241,8 @@ class IconCache(private val ctx: Context) {
         val tint = LauncherApp.get().tintColor()
         if (LauncherApp.get().prefs.bool(K.IOS_ICONS)) {
             val sp = IosIcons.match(a.pkg, a.label)
-            if (sp != null) { IosIcons.draw(c, sp, rect, mode, tint); return }
+            // Third-party / Google apps keep their own real icon (that is what iOS shows too); glyphs only for Clear/Tinted.
+            if (sp != null && (!IosIcons.isExtra(sp) || mode == 3 || mode == 4)) { IosIcons.draw(c, sp, rect, mode, tint); return }
         }
         val tintDark = mix(tint, Color.BLACK, 0.55f)
         val tintLight = mix(tint, Color.WHITE, 0.55f)
@@ -221,13 +262,13 @@ class IconCache(private val ctx: Context) {
                 dr.colorFilter = null
             }
             when (mode) {
-                3 -> {
-                    fill.color = Color.argb(60, 255, 255, 255); c.drawRect(rect, fill)
-                    layer(fg, PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN))
-                }
-                4 -> {
-                    fill.color = tintDark; c.drawRect(rect, fill)
-                    layer(fg, PorterDuffColorFilter(tintLight, PorterDuff.Mode.SRC_IN))
+                3, 4 -> {
+                    fill.color = if (mode == 3) Color.argb(60, 255, 255, 255) else tintDark
+                    c.drawRect(rect, fill)
+                    val ink = if (mode == 3) Color.WHITE else tintLight
+                    // Only use the silhouette when it is a real glyph; solid/full-bleed foregrounds become blobs.
+                    if (fg != null && silhouetteOk(fg, rect, infl)) layer(fg, PorterDuffColorFilter(ink, PorterDuff.Mode.SRC_IN))
+                    else monogram(c, a.label, rect, s, ink)
                 }
                 else -> {
                     layer(bg, null)
@@ -248,12 +289,9 @@ class IconCache(private val ctx: Context) {
             Color.alpha(leg.getPixel(s - 1 - (s * 0.05f).toInt(), s / 2)) > 230
         if (fullBleed) {
             if (mode == 3 || mode == 4) {
-                val gp = Paint(Paint.FILTER_BITMAP_FLAG)
-                val cm = ColorMatrix(); cm.setSaturation(0f)
-                gp.colorFilter = ColorMatrixColorFilter(cm)
-                c.drawBitmap(leg, null, rect, gp)
-                fill.color = if (mode == 3) Color.argb(90, 255, 255, 255) else Color.argb(150, Color.red(tint), Color.green(tint), Color.blue(tint))
+                fill.color = if (mode == 3) Color.argb(60, 255, 255, 255) else tintDark
                 c.drawRect(rect, fill)
+                monogram(c, a.label, rect, s, if (mode == 3) Color.WHITE else tintLight)
             } else {
                 c.drawBitmap(leg, null, rect, paint)
                 if (mode == 2) { fill.color = Color.argb(115, 0, 0, 0); c.drawRect(rect, fill) }
@@ -273,11 +311,53 @@ class IconCache(private val ctx: Context) {
             val inset = s * 0.15f
             val dst = RectF(rect.left + inset, rect.top + inset, rect.right - inset, rect.bottom - inset)
             val gp = Paint(Paint.FILTER_BITMAP_FLAG)
-            if (mode == 3) gp.colorFilter = PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN)
-            if (mode == 4) gp.colorFilter = PorterDuffColorFilter(tintLight, PorterDuff.Mode.SRC_IN)
-            c.drawBitmap(leg, null, dst, gp)
+            if ((mode == 3 || mode == 4) && coverage(leg) > 0.78f) {
+                monogram(c, a.label, rect, s, if (mode == 3) Color.WHITE else tintLight)
+            } else {
+                if (mode == 3) gp.colorFilter = PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN)
+                if (mode == 4) gp.colorFilter = PorterDuffColorFilter(tintLight, PorterDuff.Mode.SRC_IN)
+                c.drawBitmap(leg, null, dst, gp)
+            }
         }
         leg.recycle()
+    }
+
+
+    // ------------------------------------------------------------------ monochrome fallbacks
+
+    /** Fraction of the central area that is opaque. ~1 means a solid blob, ~0 means nothing to show. */
+    private fun coverage(b: Bitmap): Float {
+        val n = 24
+        val sm = Bitmap.createScaledBitmap(b, n, n, true)
+        var hit = 0; var tot = 0
+        for (y in 3 until n - 3) for (x in 3 until n - 3) { tot++; if (Color.alpha(sm.getPixel(x, y)) > 170) hit++ }
+        sm.recycle()
+        return hit / tot.toFloat()
+    }
+
+    private fun silhouetteOk(fg: Drawable, rect: RectF, infl: Int): Boolean {
+        val n = 64
+        val tmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888)
+        val tc = Canvas(tmp)
+        val k = n / rect.width()
+        val e = infl * k
+        fg.setBounds((-e).toInt(), (-e).toInt(), (n + e).toInt(), (n + e).toInt())
+        fg.draw(tc)
+        val cv = coverage(tmp)
+        tmp.recycle()
+        return cv in 0.04f..0.78f
+    }
+
+    /** Clean letter-mark used by Clear/Tinted icons for apps that have no usable glyph. */
+    private fun monogram(c: Canvas, label: String, rect: RectF, s: Int, ink: Int) {
+        val ch = label.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString() ?: "?"
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        p.color = ink
+        p.textAlign = Paint.Align.CENTER
+        p.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        p.textSize = s * 0.54f
+        val fm = p.fontMetrics
+        c.drawText(ch, rect.centerX(), rect.centerY() - (fm.ascent + fm.descent) / 2f, p)
     }
 
     // ------------------------------------------------------------------ custom icons

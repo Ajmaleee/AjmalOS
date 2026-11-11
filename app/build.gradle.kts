@@ -12,20 +12,31 @@ android {
         minSdk = 28
         // Target 28 on purpose: Android 9 behaviour, no package-visibility filtering.
         targetSdk = 28
-        versionCode = 1
-        versionName = "1.0.0"
+        // Always increases (minutes since 2024-01-01) so every new build installs over the old one.
+        versionCode = ((System.currentTimeMillis() - 1704067200000L) / 60000L).toInt() + 10
+        versionName = "1.1.0"
+    }
+
+    // One fixed key for every build (local or CI). A random debug key per build is what forced uninstalling.
+    signingConfigs {
+        create("ajmal") {
+            storeFile = file("ajmal.keystore")
+            storePassword = "ajmalos123"
+            keyAlias = "ajmal"
+            keyPassword = "ajmalos123"
+        }
     }
 
     buildTypes {
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("ajmal")
         }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Signed with the debug key so the release APK is directly installable.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("ajmal")
         }
     }
 

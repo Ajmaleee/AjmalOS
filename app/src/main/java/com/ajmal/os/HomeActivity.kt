@@ -72,7 +72,10 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
     private var menuView: View? = null
     private var pendingIconPkg: String? = null
     var folderOverlay: FolderOverlay? = null
-    private var library: LibraryOverlay? = null
+    private var libPage: LibraryPage? = null
+    private var libDark = false
+    private var lastIme = 0
+    private var libFade = 0f
     private var search: SearchOverlay? = null
     private var overview: OverviewOverlay? = null
     private var fps: TextView? = null
@@ -104,12 +107,13 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
             insetTop = ins.stableInsetTop
             insetBottom = ins.stableInsetBottom
             val ime = ins.systemWindowInsetBottom
-            library?.setBottomInset(ime)
+            lastIme = ime
+            libPage?.setBottomInset(ime)
             search?.setBottomInset(ime)
             if (model.ready) { applyChrome(); rebuildIfMetricsChanged() }
             ins
         }
-        model.listeners.add { if (!drag.active) refreshAll(); library?.reload() }
+        model.listeners.add { if (!drag.active) refreshAll(); libPage?.reload() }
         app.glass.changeCbs.add { for (v in viewCache.values) v.invalidate() }
         model.whenReady { applyAll() }
         askWallpaperAccess()
@@ -165,7 +169,7 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
         when {
             menuView != null -> dismissMenu()
             folderOverlay != null -> folderOverlay?.dismiss(true)
-            library != null -> library?.back()
+            pager.onLibrary && libPage != null -> libPage?.back()
             search != null -> search?.close()
             overview != null -> overview?.close()
             editMode -> setEditing(false)
@@ -290,7 +294,9 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
     private fun applyChrome() {
         computeMetrics()
         val m = metrics
-        (pager.layoutParams as FrameLayout.LayoutParams).apply { topMargin = m.pagerTop; bottomMargin = m.pagerBottom }
+        (pager.layoutParams as FrameLayout.LayoutParams).apply { topMargin = 0; bottomMargin = 0 }
+        pager.padTop = m.pagerTop; pager.padBottom = m.pagerBottom
+        libPage?.setBottomInset(lastIme)
         (dots.layoutParams as FrameLayout.LayoutParams).bottomMargin = m.dotsB
         dots.visibility = if (m.dotsOn) View.VISIBLE else View.GONE
         (pill.layoutParams as FrameLayout.LayoutParams).bottomMargin = m.pillB
@@ -306,6 +312,7 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
             topMargin = insetTop + dpi(6); leftMargin = dpi(14); rightMargin = dpi(14)
         }
         dim.alpha = prefs.int(K.DIM) / 100f
+        applyFade()
         root.requestLayout()
     }
 
@@ -317,13 +324,14 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
 
     private fun applyAll() {
         appliedRev = prefs.rev
+        if (model.labelsIos != prefs.bool(K.IOS_LABELS)) model.refresh()
         applyChrome()
         model.normalize(cols, rows, dockCount)
         val it = viewCache.entries.iterator()
         while (it.hasNext()) if (it.next().value !is WidgetFrame) it.remove()
         refreshAll()
         app.glass.reload()
-        library?.reload()
+        libPage?.reload()
         updateFps()
     }
 
@@ -395,7 +403,12 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
         // views for folder children are not cached here; drop anything no longer present
         viewCache.keys.retainAll(used)
         if (dead.isNotEmpty()) { model.items.removeAll(dead.toSet()); model.save() }
-        pager.setPages(layouts, pager.index)
+        if (libPage == null || libDark != app.isDark()) {
+            libPage?.reset()
+            libPage = LibraryPage(this).also { it.setBottomInset(lastIme) }
+            libDark = app.isDark()
+        }
+        pager.setPages(layouts, pager.index, libPage!!.view)
         dots.count = layouts.size
         dots.pos = pager.index.toFloat()
         if (editMode) for (v in viewCache.values) v.invalidate()
@@ -558,11 +571,28 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
     // ------------------------------------------------------------------ pager callbacks / gestures
 
     override fun onPageSettled(index: Int) {}
-    override fun onScroll(pos: Float) { dots.pos = pos }
+    override fun onScroll(pos: Float) {
+        val last = (pager.pages.size - 1).coerceAtLeast(0).toFloat()
+        dots.pos = min(pos, last)
+        val f = if (pager.extra != null) (pos - last).coerceIn(0f, 1f) else 0f
+        if (f != libFade) { libFade = f; applyFade() }
+    }
+
+    /** Dock, search pill and page dots fade out while the App Library page slides in. */
+    private fun applyFade() {
+        val f = libFade
+        val gone = f > 0.98f
+        dockFrame.alpha = 1f - f
+        pill.alpha = 1f - f
+        dots.alpha = 1f - f
+        dockFrame.visibility = if (!dockVisible) View.GONE else if (gone) View.INVISIBLE else View.VISIBLE
+        pill.visibility = if (!metrics.pillOn) View.GONE else if (gone) View.INVISIBLE else View.VISIBLE
+        dots.visibility = if (!metrics.dotsOn) View.GONE else if (gone) View.INVISIBLE else View.VISIBLE
+    }
     override fun onPinchIn() { onAction(prefs.int(K.G_PINCH)) }
 
     override fun onAction(a: Int) {
-        if (drag.active || menuView != null || folderOverlay != null || library != null || search != null || overview != null) return
+        if (drag.active || menuView != null || folderOverlay != null || search != null || overview != null) return
         perform(a)
     }
 
@@ -579,7 +609,7 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
         } else perform(a)
     }
 
-    private fun overlayBusy() = menuView != null || folderOverlay != null || library != null || search != null || overview != null
+    private fun overlayBusy() = menuView != null || folderOverlay != null || search != null || overview != null
 
     fun perform(a: Int) {
         when (a) {
@@ -625,13 +655,13 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
 
     fun closeOverlays() {
         folderOverlay?.dismiss(false)
-        library?.close(); search?.close(); overview?.close()
+        libPage?.reset(); search?.close(); overview?.close()
     }
 
+    /** The App Library is the right-most pager page, as on iOS. */
     fun openLibrary() {
-        if (library != null) return
         setEditing(false)
-        library = LibraryOverlay(this).also { it.show() }
+        pager.goTo(pager.pages.size)
     }
 
     fun openSearch() {
@@ -645,7 +675,6 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
         overview = OverviewOverlay(this).also { it.show() }
     }
 
-    fun libraryGone() { library = null }
     fun searchGone() { search = null }
     fun overviewGone() { overview = null }
     fun folderGone(f: FolderOverlay) { if (folderOverlay === f) folderOverlay = null }
@@ -845,15 +874,15 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
             model.hiddenApps.remove(a.key)
             model.save(); refreshAll()
             Toast.makeText(this, "Added to home screen", Toast.LENGTH_SHORT).show()
-            library?.reload()
+            libPage?.reload()
         })
         val fav = model.favorites.contains(a.key)
         acts.add((if (fav) "Remove from favorites" else "Add to favorites") to {
             if (fav) model.favorites.remove(a.key) else model.favorites.add(a.key)
-            model.save(); library?.reload()
+            model.save(); libPage?.reload()
         })
         val hid = model.hiddenApps.contains(a.key)
-        acts.add((if (hid) "Show on home screen" else "Hide from home screen") to {
+        acts.add((if (hid) "Remove from Hidden" else "Hide App (needs passcode)") to {
             if (hid) model.hiddenApps.remove(a.key)
             else {
                 model.hiddenApps.add(a.key)
@@ -861,7 +890,7 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
                 model.tidy()
                 refreshAll()
             }
-            model.save(); library?.reload()
+            model.save(); libPage?.reload()
         })
         acts.add("Set category" to { categoryDialog(a) })
         acts.add("App info" to { appInfo(a.pkg) })
@@ -872,13 +901,13 @@ class HomeActivity : Activity(), IconHost, PagerCallbacks {
 
     private fun categoryDialog(a: AppInfo) {
         val rows = ArrayList<Pair<String, () -> Unit>>()
-        for (c in model.categories()) rows.add(c to { model.customCat[a.key] = c; model.save(); library?.reload() })
+        for (c in model.categories()) rows.add(c to { model.customCat[a.key] = c; model.save(); libPage?.reload() })
         rows.add("New category…" to {
             inputDialog("Category name", "") { t ->
-                if (t.isNotEmpty()) { model.customCat[a.key] = t; model.save(); library?.reload() }
+                if (t.isNotEmpty()) { model.customCat[a.key] = t; model.save(); libPage?.reload() }
             }
         })
-        rows.add("Reset to automatic" to { model.customCat.remove(a.key); model.save(); library?.reload() })
+        rows.add("Reset to automatic" to { model.customCat.remove(a.key); model.save(); libPage?.reload() })
         listDialog("Category", rows)
     }
 

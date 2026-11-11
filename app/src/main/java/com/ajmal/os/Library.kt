@@ -310,11 +310,12 @@ private class IconSource(private val v: View) {
 class CategoryCardView(
     ctx: Context, private val h: HomeActivity, private val title: String,
     private val apps: List<AppInfo>, private val cardPx: Int,
-    private val onOpen: () -> Unit, private val onLaunched: () -> Unit
+    private val onOpen: () -> Unit, private val onLaunched: () -> Unit,
+    private val locked: Boolean = false
 ) : View(ctx) {
     private val app = LauncherApp.get()
     private val dp = ctx.resources.displayMetrics.density
-    private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
+    private val slop = Touch.hold(ctx)
     private val src = IconSource(this)
     private val bg = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bp = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -384,6 +385,11 @@ class CategoryCardView(
         rf.set(dp / 2f, dp / 2f, cardPx - dp / 2f, cardPx - dp / 2f)
         c.drawPath(Squircle.path(rf, r, path), bg)
 
+        if (locked) {
+            drawLock(c, fg)
+            drawTitle(c, fg)
+            return
+        }
         val big = if (bigOnly) 4 else 3
         for (i in 0 until big) {
             val a = apps.getOrNull(i) ?: break
@@ -399,12 +405,36 @@ class CategoryCardView(
             }
         }
 
+        drawTitle(c, fg)
+    }
+
+    private fun drawTitle(c: Canvas, fg: Int) {
         tp.textSize = 12.5f * dp
         tp.typeface = Typeface.DEFAULT_BOLD
         tp.color = fg
         tp.alpha = 215
         val shown = TextUtils.ellipsize(title, tp, cardPx - 10f * dp, TextUtils.TruncateAt.END).toString()
         c.drawText(shown, 7f * dp, cardPx + titleH * 0.72f, tp)
+    }
+
+    /** Padlock glyph for the locked Hidden folder (apps inside are not revealed). */
+    private fun drawLock(c: Canvas, fg: Int) {
+        val s = cardPx * 0.30f
+        val cx = cardPx / 2f
+        val cy = cardPx / 2f + s * 0.12f
+        bg.style = Paint.Style.FILL
+        bg.color = fg
+        bg.alpha = 230
+        rf.set(cx - s * 0.5f, cy - s * 0.05f, cx + s * 0.5f, cy + s * 0.55f)
+        c.drawRoundRect(rf, s * 0.14f, s * 0.14f, bg)
+        bg.style = Paint.Style.STROKE
+        bg.strokeWidth = s * 0.13f
+        bg.strokeCap = Paint.Cap.ROUND
+        rf.set(cx - s * 0.3f, cy - s * 0.62f, cx + s * 0.3f, cy + s * 0.1f)
+        c.drawArc(rf, 180f, 180f, false, bg)
+        c.drawLine(cx - s * 0.3f, cy - s * 0.27f, cx - s * 0.3f, cy - s * 0.04f, bg)
+        c.drawLine(cx + s * 0.3f, cy - s * 0.27f, cx + s * 0.3f, cy - s * 0.04f, bg)
+        bg.strokeCap = Paint.Cap.BUTT
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
@@ -415,14 +445,17 @@ class CategoryCardView(
                 tapSlot = if (e.y <= cardPx) hit(e.x, e.y) else -1
                 pressedSlot = tapSlot
                 invalidate()
-                if (appAt(tapSlot) != null) postDelayed(lp, ViewConfiguration.getLongPressTimeout().toLong())
+                // keep the parent scroller/pager from stealing the press while it may still become a long press
+                parent?.requestDisallowInterceptTouchEvent(true)
+                if (appAt(tapSlot) != null) postDelayed(lp, Touch.LONG_MS)
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if (!moved && (abs(e.x - downX) > slop || abs(e.y - downY) > slop)) {
+                if (!moved && !longFired && (abs(e.x - downX) > slop || abs(e.y - downY) > slop)) {
                     moved = true
                     removeCallbacks(lp)
                     pressedSlot = -1
+                    parent?.requestDisallowInterceptTouchEvent(false)
                     invalidate()
                 }
             }
@@ -452,7 +485,7 @@ class AppGridView(
 ) : View(ctx) {
     private val app = LauncherApp.get()
     private val dp = ctx.resources.displayMetrics.density
-    private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
+    private val slop = Touch.hold(ctx)
     private val src = IconSource(this)
     private val bp = Paint(Paint.FILTER_BITMAP_FLAG)
     private val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
@@ -505,11 +538,13 @@ class AppGridView(
             MotionEvent.ACTION_DOWN -> {
                 downX = e.x; downY = e.y; moved = false; longFired = false
                 downIdx = indexAt(e.x, e.y)
-                if (downIdx >= 0) postDelayed(lp, ViewConfiguration.getLongPressTimeout().toLong())
+                parent?.requestDisallowInterceptTouchEvent(true)
+                if (downIdx >= 0) postDelayed(lp, Touch.LONG_MS)
                 return true
             }
-            MotionEvent.ACTION_MOVE -> if (!moved && (abs(e.x - downX) > slop || abs(e.y - downY) > slop)) {
+            MotionEvent.ACTION_MOVE -> if (!moved && !longFired && (abs(e.x - downX) > slop || abs(e.y - downY) > slop)) {
                 moved = true; removeCallbacks(lp)
+                parent?.requestDisallowInterceptTouchEvent(false)
             }
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(lp)
@@ -522,13 +557,14 @@ class AppGridView(
     }
 }
 
-private class Group(val title: String, val display: List<AppInfo>, val all: List<AppInfo>)
+private class Group(val title: String, val display: List<AppInfo>, val all: List<AppInfo>, val locked: Boolean = false)
 
 /**
- * App Library in the style of iOS: search bar on top, a 2-column grid of category cards. Tapping the
- * search bar switches to an A-Z list. Pulling down from the top returns to the home screen.
+ * App Library, as on iOS: the right-most page of the home pager (swipe left from the last page). Search bar
+ * on top, 2-column grid of category cards; tapping the search bar switches to an A-Z list. The Hidden folder
+ * is shown as a locked card and needs the passcode (or a fingerprint) to open.
  */
-class LibraryOverlay(private val h: HomeActivity) {
+class LibraryPage(private val h: HomeActivity) {
     val view = FrameLayout(h)
     private val content = LinearLayout(h)
     private val edit = styleEdit(h, "App Library")
@@ -540,21 +576,19 @@ class LibraryOverlay(private val h: HomeActivity) {
     private var searching = false
     private var query = ""
     private var sheet: FrameLayout? = null
-    private val pull = PullLayout(
-        h, 1,
-        { if (searching) !list.canScrollVertically(-1) else !scroll.canScrollVertically(-1) },
-        { if (searching) { exitSearch(); false } else { close(); true } }
-    )
-    private val anim = OverlayAnim(view, h.dpf(40f), h.overlayLayer) { h.libraryGone() }
+    private var pad: PinPad? = null
+    private var ime = 0
 
     init {
+        view.isClickable = true
+        view.isFocusableInTouchMode = true
         val bd = GlassFrame(h)
         bd.fullscreen = true
         bd.strength = 1.5f
         view.addView(bd, FrameLayout.LayoutParams(-1, -1))
 
         content.orientation = LinearLayout.VERTICAL
-        content.setPadding(h.dpi(16), h.insetTop + h.dpi(12), h.dpi(16), h.insetBottom)
+        applyPadding()
 
         val head = LinearLayout(h)
         head.gravity = Gravity.CENTER_VERTICAL
@@ -576,10 +610,7 @@ class LibraryOverlay(private val h: HomeActivity) {
         list.adapter = adapter
         list.visibility = View.GONE
         content.addView(list, LinearLayout.LayoutParams(-1, 0, 1f).also { it.topMargin = h.dpi(8) })
-
-        pull.isFocusableInTouchMode = true
-        pull.addView(content, FrameLayout.LayoutParams(-1, -1))
-        view.addView(pull, FrameLayout.LayoutParams(-1, -1))
+        view.addView(content, FrameLayout.LayoutParams(-1, -1))
 
         edit.setOnFocusChangeListener { _, f -> if (f) enterSearch() }
         edit.addTextChangedListener(object : TextWatcher {
@@ -593,12 +624,12 @@ class LibraryOverlay(private val h: HomeActivity) {
         })
         edit.setOnEditorActionListener { _, _, _ ->
             val first = adapter.rows.firstOrNull { it.type == 1 }?.app
-            if (first != null) { h.launch(first, null); close() }
+            if (first != null) { h.launch(first, null); reset() }
             true
         }
         list.setOnItemClickListener { _, _, i, _ ->
             val a = adapter.rows[i].app
-            if (a != null) { h.launch(a, null); close() }
+            if (a != null) { h.launch(a, null); reset() }
         }
         list.setOnItemLongClickListener { _, _, i, _ ->
             val a = adapter.rows[i].app
@@ -608,26 +639,34 @@ class LibraryOverlay(private val h: HomeActivity) {
         buildGrid()
     }
 
-    fun show() = anim.show()
-
-    fun close() {
-        hideIme(h, edit)
-        sheet?.let { view.removeView(it) }
-        sheet = null
-        anim.hide()
+    private fun applyPadding() {
+        content.setPadding(h.dpi(16), h.insetTop + h.dpi(12), h.dpi(16), if (ime > h.insetBottom) ime else h.insetBottom)
     }
 
-    /** Back button: close the category sheet, then the search list, then the library. */
+    fun setBottomInset(px: Int) { ime = px; applyPadding() }
+
+    /** Back button: close the passcode pad, then the category sheet, then search, then return to the last home page. */
     fun back() {
         when {
+            pad != null -> pad?.dismiss()
             sheet != null -> closeSheet()
             searching -> exitSearch()
             else -> close()
         }
     }
 
-    fun setBottomInset(px: Int) {
-        content.setPadding(h.dpi(16), h.insetTop + h.dpi(12), h.dpi(16), if (px > h.insetBottom) px else h.insetBottom)
+    fun close() {
+        hideIme(h, edit)
+        h.pager.goTo(h.pager.pages.size - 1)
+    }
+
+    /** Back to the plain grid without navigating (after launching an app / pressing Home). */
+    fun reset() {
+        pad?.dismiss()
+        sheet?.let { view.removeView(it) }
+        sheet = null
+        if (searching) exitSearch()
+        scroll.scrollTo(0, 0)
     }
 
     fun reload() {
@@ -648,7 +687,7 @@ class LibraryOverlay(private val h: HomeActivity) {
         searching = false
         edit.setText("")
         hideIme(h, edit)
-        pull.requestFocus()
+        view.requestFocus()
         list.visibility = View.GONE
         cancel.visibility = View.GONE
         scroll.visibility = View.VISIBLE
@@ -656,7 +695,8 @@ class LibraryOverlay(private val h: HomeActivity) {
 
     private fun rebuildList() {
         val q = query.trim().lowercase()
-        val all = h.model.apps
+        val hidden = h.model.hiddenApps
+        val all = h.model.apps.filter { !hidden.contains(it.key) } // hidden apps never show up in search
         adapter.set(sectionRows(if (q.isEmpty()) all else all.filter { it.lower.contains(q) }), true)
     }
 
@@ -676,8 +716,9 @@ class LibraryOverlay(private val h: HomeActivity) {
             val l = vis.filter { m.categoryOf(it) == cat }.sortedWith(byUse)
             if (l.isNotEmpty()) groups.add(Group(cat, l, l.sortedBy { it.lower }))
         }
+        // Hidden folder: always present, locked, contents never drawn on the card.
         val hid = m.apps.filter { hidden.contains(it.key) }
-        if (hid.isNotEmpty()) groups.add(Group("Hidden", hid.sortedWith(byUse), hid))
+        groups.add(Group("Hidden", emptyList(), hid.sortedBy { it.lower }, true))
 
         val dm = h.resources.displayMetrics
         val gap = h.dpi(14)
@@ -686,7 +727,8 @@ class LibraryOverlay(private val h: HomeActivity) {
             val row = LinearLayout(h)
             row.orientation = LinearLayout.HORIZONTAL
             for ((i, g) in pair.withIndex()) {
-                val card = CategoryCardView(h, h, g.title, g.display, cw, { openSheet(g.title, g.all) }, { close() })
+                val open: () -> Unit = if (g.locked) ({ unlockHidden() }) else ({ openSheet(g.title, g.all) })
+                val card = CategoryCardView(h, h, g.title, g.display, cw, open, { reset() }, g.locked)
                 val lp = LinearLayout.LayoutParams(cw, -2)
                 if (i == 0) lp.rightMargin = gap
                 row.addView(card, lp)
@@ -696,7 +738,15 @@ class LibraryOverlay(private val h: HomeActivity) {
         gridHost.addView(View(h), LinearLayout.LayoutParams(-1, h.dpi(24)))
     }
 
-    private fun openSheet(title: String, apps: List<AppInfo>) {
+    private fun unlockHidden() {
+        if (pad != null || sheet != null) return
+        hideIme(h, edit)
+        val p = PinPad(h, { openSheet("Hidden", h.model.apps.filter { h.model.hiddenApps.contains(it.key) }.sortedBy { it.lower }, true) }, { pad = null })
+        pad = p
+        view.addView(p, FrameLayout.LayoutParams(-1, -1))
+    }
+
+    private fun openSheet(title: String, apps: List<AppInfo>, isHidden: Boolean = false) {
         if (sheet != null) return
         val fg = if (h.app.isDark()) Color.WHITE else 0xFF1C1C1E.toInt()
         val dm = h.resources.displayMetrics
@@ -713,13 +763,19 @@ class LibraryOverlay(private val h: HomeActivity) {
         val t = label(h, title, 20f, fg)
         t.setTypeface(t.typeface, Typeface.BOLD)
         col.addView(t)
-        val grid = AppGridView(h, h, apps, 4, 56) { close() }
-        val sv = ScrollView(h)
-        sv.isVerticalScrollBarEnabled = false
-        sv.overScrollMode = View.OVER_SCROLL_NEVER
-        sv.addView(grid, FrameLayout.LayoutParams(-1, -2))
-        val maxH = (dm.heightPixels * 0.6f).toInt()
-        col.addView(sv, LinearLayout.LayoutParams(-1, min(grid.gridHeight(), maxH)).also { it.topMargin = h.dpi(10) })
+        if (apps.isEmpty()) {
+            val hint = label(h, if (isHidden) "No hidden apps yet.\nPress and hold any app and choose “Hide App” to put it here." else "Empty", 14f, fg)
+            hint.alpha = 0.7f
+            col.addView(hint, LinearLayout.LayoutParams(-1, -2).also { it.topMargin = h.dpi(14); it.bottomMargin = h.dpi(10) })
+        } else {
+            val grid = AppGridView(h, h, apps, 4, 56) { reset() }
+            val sv = ScrollView(h)
+            sv.isVerticalScrollBarEnabled = false
+            sv.overScrollMode = View.OVER_SCROLL_NEVER
+            sv.addView(grid, FrameLayout.LayoutParams(-1, -2))
+            val maxH = (dm.heightPixels * 0.6f).toInt()
+            col.addView(sv, LinearLayout.LayoutParams(-1, min(grid.gridHeight(), maxH)).also { it.topMargin = h.dpi(10) })
+        }
         panel.addView(col, FrameLayout.LayoutParams(-1, -2))
         layer.addView(panel, FrameLayout.LayoutParams(dm.widthPixels - h.dpi(32), -2, Gravity.CENTER))
         view.addView(layer, FrameLayout.LayoutParams(-1, -1))
@@ -822,7 +878,7 @@ class SearchOverlay(private val h: HomeActivity) {
         val q = query.trim().lowercase()
         val out = ArrayList<Row>()
         if (q.isEmpty()) {
-            val fr = m.frequent().take(6)
+            val fr = m.frequent().filter { !m.hiddenApps.contains(it.key) }.take(6)
             if (fr.isNotEmpty()) {
                 out.add(Row(0, "SUGGESTIONS", null))
                 for (a in fr) out.add(Row(1, a.label, a))
@@ -832,7 +888,7 @@ class SearchOverlay(private val h: HomeActivity) {
                 for (s in m.searches) out.add(Row(2, s, null))
             }
         } else {
-            val hits = m.apps.filter { it.lower.contains(q) }
+            val hits = m.apps.filter { it.lower.contains(q) && !m.hiddenApps.contains(it.key) }
                 .sortedWith(compareBy<AppInfo>({ if (it.lower.startsWith(q)) 0 else 1 }, { -(m.usage[it.key] ?: 0) }, { it.lower }))
             for (a in hits.take(60)) out.add(Row(1, a.label, a))
         }
