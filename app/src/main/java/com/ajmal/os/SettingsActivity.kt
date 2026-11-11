@@ -123,11 +123,13 @@ class SettingsActivity : Activity() {
         title.setTypeface(title.typeface, android.graphics.Typeface.BOLD)
         title.setPadding(dpi(4), dpi(16), 0, 0)
         list.addView(title)
+        val ver = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" }
+        list.addView(label(this, "Version $ver · App Library page · Pure Liquid glass", 12f, sub).also { it.setPadding(dpi(4), dpi(2), 0, 0) })
         list.addView(label(this, "Changes apply when you return to the home screen.", 13f, sub).also { it.setPadding(dpi(4), 0, 0, 0) })
 
         header("Appearance")
         choice("Theme", K.THEME, arrayOf("Automatic (system)", "Light", "Dark"))
-        choice("Glass profile", K.PROFILE, arrayOf("Ultra Lite (default)", "Balanced", "Ultra Glass", "Pure Liquid (water glass)"))
+        choice("Glass profile", K.PROFILE, arrayOf("Ultra Lite", "Balanced", "Ultra Glass", "Pure Liquid (default)"))
         seek("Transparency", K.OPACITY, 0, 100, "%")
         seek("Blur intensity", K.BLUR, 0, 100, "%")
         seek("Refraction intensity", K.REFRACT, 0, 100, "%")

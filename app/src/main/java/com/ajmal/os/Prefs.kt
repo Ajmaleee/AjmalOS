@@ -50,8 +50,8 @@ class Prefs(ctx: Context) {
     @Volatile var rev = 0
 
     init {
-        d(K.THEME, 0); d(K.PROFILE, 0); d(K.OPACITY, 55); d(K.BLUR, 45); d(K.REFRACT, 35)
-        d(K.TINT, 0); d(K.EDGE, 60); d(K.SHADOW, 40); d(K.ICON_APPEARANCE, 0)
+        d(K.THEME, 0); d(K.PROFILE, 3); d(K.OPACITY, 55); d(K.BLUR, 45); d(K.REFRACT, 35)
+        d(K.TINT, 0); d(K.EDGE, 60); d(K.SHADOW, 40); d(K.ICON_APPEARANCE, 5)
         d(K.ICON_SIZE, 58); d(K.ICON_RADIUS, 23); d(K.LABELS, true); d(K.LABEL_SIZE, 11)
         d(K.LABEL_COLOR, 0); d(K.LARGE_ICONS, false); d(K.IOS_ICONS, true); d(K.IOS_LABELS, true)
         d(K.COLS, 4); d(K.ROWS, 6); d(K.HSPACE, 6); d(K.VSPACE, 6); d(K.DOTS, true)

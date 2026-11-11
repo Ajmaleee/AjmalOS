@@ -14,7 +14,7 @@ android {
         targetSdk = 28
         // Always increases (minutes since 2024-01-01) so every new build installs over the old one.
         versionCode = ((System.currentTimeMillis() - 1704067200000L) / 60000L).toInt() + 10
-        versionName = "1.1.0"
+        versionName = "1.1.1"
     }
 
     // One fixed key for every build (local or CI). A random debug key per build is what forced uninstalling.
