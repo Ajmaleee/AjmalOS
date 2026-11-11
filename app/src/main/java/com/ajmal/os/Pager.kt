@@ -202,7 +202,7 @@ class HomePager(ctx: Context, private val cb: PagerCallbacks) : ViewGroup(ctx) {
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 removeCallbacks(emptyLp)
-                if (!editing) postDelayed(emptyLp, Touch.LONG_MS)
+                postDelayed(emptyLp, Touch.LONG_MS)
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
